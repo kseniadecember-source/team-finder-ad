@@ -1,7 +1,14 @@
+import random
 import uuid
 from io import BytesIO
+from pathlib import Path
 
-from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
+from django.conf import settings
+from django.contrib.auth.models import (
+    AbstractBaseUser,
+    BaseUserManager,
+    PermissionsMixin,
+)
 from django.core.files.base import ContentFile
 from django.db import models
 from PIL import Image, ImageDraw, ImageFont
@@ -36,46 +43,83 @@ class UserManager(BaseUserManager):
         return self._create_user(email, password, **extra_fields)
 
 
-def generate_avatar(name):
-    """Генерирует аватар с первой буквой имени на однотонном фоне."""
-    size = 200
-    bg_color = (random_color())
-    text_color = (255, 255, 255)
-    image = Image.new("RGB", (size, size), bg_color)
-    draw = ImageDraw.Draw(image)
-    letter = (name[0] if name else "?").upper()
-    try:
-        font = ImageFont.truetype("arial.ttf", 120)
-    except OSError:
-        font = ImageFont.load_default()
-    bbox = draw.textbbox((0, 0), letter, font=font)
-    w = bbox[2] - bbox[0]
-    h = bbox[3] - bbox[1]
-    draw.text(((size - w) / 2 - bbox[0], (size - h) / 2 - bbox[1]), letter, fill=text_color, font=font)
-    buffer = BytesIO()
-    image.save(buffer, format="PNG")
-    return ContentFile(buffer.getvalue(), name=f"avatar_{uuid.uuid4().hex}.png")
-
-
 def random_color():
-    """Возвращает случайный не слишком яркий цвет."""
-    import random
+    """Возвращает случайный умеренно насыщенный цвет для фона аватара."""
     r = random.randint(50, 150)
     g = random.randint(50, 150)
     b = random.randint(50, 150)
     return (r, g, b)
 
 
+def _load_avatar_font(size=110):
+    """Загружает шрифт для генерации аватара с запасными вариантами."""
+    font_candidates = [
+        Path(settings.BASE_DIR)
+        / "static"
+        / "fonts"
+        / "Neue_Haas_Grotesk_Display_Pro_75_Bold.otf",
+        "arial.ttf",
+        "DejaVuSans-Bold.ttf",
+    ]
+    for candidate in font_candidates:
+        try:
+            return ImageFont.truetype(str(candidate), size)
+        except OSError:
+            continue
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def generate_avatar(name):
+    """Генерирует аватар с первой буквой имени на однотонном фоне."""
+    size = 200
+    bg_color = random_color()
+    text_color = (255, 255, 255)
+    image = Image.new("RGB", (size, size), bg_color)
+    draw = ImageDraw.Draw(image)
+    letter = (name.strip()[0] if name and name.strip() else "?").upper()
+    font = _load_avatar_font(size=110)
+    bbox = draw.textbbox((0, 0), letter, font=font)
+    w = bbox[2] - bbox[0]
+    h = bbox[3] - bbox[1]
+    draw.text(
+        ((size - w) / 2 - bbox[0], (size - h) / 2 - bbox[1]),
+        letter,
+        fill=text_color,
+        font=font,
+    )
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    return ContentFile(buffer.getvalue(), name=f"avatar_{uuid.uuid4().hex}.png")
+
+
 class User(AbstractBaseUser, PermissionsMixin):
     email = models.EmailField(unique=True, verbose_name="Email")
     name = models.CharField(max_length=124, verbose_name="Имя")
     surname = models.CharField(max_length=124, verbose_name="Фамилия")
-    avatar = models.ImageField(upload_to="avatars/", verbose_name="Аватар")
-    phone = models.CharField(max_length=12, verbose_name="Телефон")
+    avatar = models.ImageField(
+        upload_to="avatars/",
+        blank=True,
+        verbose_name="Аватар",
+    )
+    phone = models.CharField(
+        max_length=12,
+        blank=True,
+        default="",
+        verbose_name="Телефон",
+    )
     github_url = models.URLField(blank=True, verbose_name="GitHub")
     about = models.TextField(max_length=256, blank=True, verbose_name="О себе")
     is_active = models.BooleanField(default=True, verbose_name="Активен")
     is_staff = models.BooleanField(default=False, verbose_name="Администратор")
+    favorites = models.ManyToManyField(
+        "projects.Project",
+        related_name="interested_users",
+        blank=True,
+        verbose_name="Избранные проекты",
+    )
 
     objects = UserManager()
 
@@ -83,6 +127,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     REQUIRED_FIELDS = ["name", "surname"]
 
     class Meta:
+        ordering = ("-id",)
         verbose_name = "Пользователь"
         verbose_name_plural = "Пользователи"
 
